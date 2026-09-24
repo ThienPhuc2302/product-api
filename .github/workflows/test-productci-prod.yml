@@ -1,0 +1,110 @@
+name: Product API - Production CI
+
+on:
+  push:
+    branches:
+      - main
+
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  production-test:
+    runs-on: ubuntu-latest
+
+    services:
+      mongodb:
+        image: mongo:7
+        ports:
+          - 27017:27017
+        options: >-
+          --health-cmd "mongosh --quiet --eval 'db.runCommand({ ping: 1 })'"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      PORT: 3000
+      MONGO_URI: mongodb://localhost:27017/productdb
+
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run syntax tests
+        run: npm test
+
+      - name: Start Product API
+        run: |
+          npm start > app.log 2>&1 &
+          echo $! > app.pid
+
+      - name: Wait for Product API healthcheck
+        run: |
+          for i in {1..20}; do
+            if curl -f http://localhost:3000/health; then
+              echo "Product API is healthy"
+              exit 0
+            fi
+
+            echo "Waiting for Product API..."
+            sleep 3
+          done
+
+          cat app.log
+          exit 1
+
+      - name: Test CREATE Product
+        run: |
+          RESPONSE=$(curl -s -f \
+            -X POST \
+            http://localhost:3000/api/products \
+            -H "Content-Type: application/json" \
+            -d '{"pid":"P001","pname":"CI Product","price":1000,"quantity":10}')
+
+          echo "$RESPONSE"
+          echo "$RESPONSE" | grep -q '"pid":"P001"'
+
+      - name: Test READ Products
+        run: |
+          RESPONSE=$(curl -s -f http://localhost:3000/api/products)
+
+          echo "$RESPONSE"
+          echo "$RESPONSE" | grep -q '"pid":"P001"'
+
+      - name: Test READ Product by pid
+        run: |
+          RESPONSE=$(curl -s -f http://localhost:3000/api/products/P001)
+
+          echo "$RESPONSE"
+          echo "$RESPONSE" | grep -q '"pid":"P001"'
+
+      - name: Test UPDATE Product
+        run: |
+          RESPONSE=$(curl -s -f \
+            -X PUT \
+            http://localhost:3000/api/products/P001 \
+            -H "Content-Type: application/json" \
+            -d '{"pname":"CI Product Updated","price":2000,"quantity":5}')
+
+          echo "$RESPONSE"
+          echo "$RESPONSE" | grep -q '"pname":"CI Product Updated"'
+
+      - name: Test DELETE Product
+        run: |
+          RESPONSE=$(curl -s -f \
+            -X DELETE \
+            http://localhost:3000/api/products/P001)
+
+          echo "$RESPONSE"
+          echo "$RESPONSE" | grep -q 'Product deleted successfully'
