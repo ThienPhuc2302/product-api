@@ -1,0 +1,71 @@
+name: Product API - Deploy Local
+
+on:
+  workflow_run:
+    workflows:
+      - "Product API - CD Docker Hub"
+    types:
+      - completed
+
+jobs:
+  deploy-local:
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+
+    runs-on:
+      - self-hosted
+      - Windows
+      - X64
+
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+
+      - name: Check Docker
+        shell: powershell
+        run: |
+          docker --version
+          docker info
+
+      - name: Pull latest Product API image
+        shell: powershell
+        run: |
+          docker compose -f docker-compose-prod.yaml pull product-api
+
+      - name: Deploy to Local Docker Engine
+        shell: powershell
+        run: |
+          docker compose -f docker-compose-prod.yaml up -d --remove-orphans
+
+      - name: Show containers
+        shell: powershell
+        run: |
+          docker compose -f docker-compose-prod.yaml ps
+
+      - name: Wait for local healthcheck
+        shell: powershell
+        run: |
+          $success = $false
+
+          for ($i = 1; $i -le 20; $i++) {
+            try {
+              $response = Invoke-RestMethod -Uri "http://localhost:3000/health"
+
+              if ($response.status -eq "ok") {
+                Write-Host "Product API local deployment is healthy"
+                $success = $true
+                break
+              }
+            }
+            catch {
+              Write-Host "Waiting for Product API healthcheck..."
+            }
+
+            Start-Sleep -Seconds 3
+          }
+
+          if (-not $success) {
+            docker compose -f docker-compose-prod.yaml logs product-api
+            exit 1
+          }
